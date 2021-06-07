@@ -81,14 +81,14 @@ describe("LiquityMigrator", () => {
 
     // 4
     describe("migrate", async () => {
-        it("can pay debt", async () => {
+        it("can pay debt 2", async () => {
             const initialBalance = await signer.getBalance();
 
             const daiWad = utils.parseUnits("10000");
             await dai.approve(proxy.address, daiWad)
 
-            const callData = actions.interface.encodeFunctionData(
-                "wipeAndFreeETH",
+            const callData = testObj.interface.encodeFunctionData(
+                "payDebt",
                 [
                     manager.address,
                     ethJoin,
@@ -98,33 +98,10 @@ describe("LiquityMigrator", () => {
                     daiWad
                 ]
             )
-            await proxy.execute(actions.address, callData)
+            await proxy.execute(testObj.address, callData)
             expect(await dai.balanceOf(signer.address)).to.eq(utils.parseUnits("40000"))
             expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("19")))
         });
-
-        // it("can pay debt 2", async () => {
-        //     const initialBalance = await signer.getBalance();
-        //
-        //     const daiWad = utils.parseUnits("10000");
-        //     await dai.approve(proxy.address, daiWad)
-        //
-        //     const callData = testObj.interface.encodeFunctionData(
-        //         "payDebt",
-        //         [
-        //             actions.address,
-        //             manager.address,
-        //             ethJoin,
-        //             daiJoin,
-        //             cdpId,
-        //             utils.parseEther("20"),
-        //             daiWad
-        //         ]
-        //     )
-        //     await proxy.execute(actions.address, callData)
-        //     expect(await dai.balanceOf(signer.address)).to.eq(utils.parseUnits("40000"))
-        //     expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("19")))
-        // });
     });
 
 });
