@@ -13,7 +13,9 @@ import {
     MakerETHMigrator,
     MakerETHMigrator__factory,
     ManagerLike,
-    ManagerLike__factory
+    ManagerLike__factory,
+    VatLike,
+    VatLike__factory
 } from "../typechain";
 import {BigNumber, utils} from "ethers";
 import {SignerWithAddress} from "@nomiclabs/hardhat-ethers/signers";
@@ -33,6 +35,8 @@ describe("LiquityMigrator", () => {
     let cdpId: BigNumber
     let dai: IERC20
     let actions: DssProxyActions
+    let urn: string;
+    let vat: VatLike;
 
     before(async () => {
         const signers = await ethers.getSigners()
@@ -70,7 +74,14 @@ describe("LiquityMigrator", () => {
         expect(await signer.getBalance()).to.be.bignumber.that.is.lessThan(initialBalance.sub(utils.parseEther("100")))
 
         cdpId = await manager.last(proxy.address)
+        urn = await manager.urns(cdpId);
+        const _vat = await manager.vat();
+        vat = VatLike__factory.connect(_vat, signer);
 
+        const [collateral, debt] = await currentDebtAndCollateral()
+
+        expect(collateral).to.be.bignumber.that.is.eq(utils.parseEther("100"))
+        expect(debt).to.be.bignumber.that.is.eq(utils.parseUnits("50000"))
 
         const migratorFactory = (await ethers.getContractFactory("MakerETHMigrator", signer)) as MakerETHMigrator__factory;
         testObj = await migratorFactory.deploy();
@@ -79,12 +90,22 @@ describe("LiquityMigrator", () => {
         expect(testObj.address).to.properAddress;
     });
 
+    async function currentDebtAndCollateral() {
+        const ilks = await manager.ilks(cdpId)
+        const [, rate, , ,] = await vat.ilks(ilks);
+        const [collateral, debt] = await vat.urns(ilks, urn);
+        const vatDai = await vat.dai(urn)
+        return [collateral, debt.mul(rate).sub(vatDai).div(BigNumber.from(10).pow(27))]
+    }
+
     // 4
     describe("migrate", async () => {
-        it("can pay debt 2", async () => {
+        it("can pay part of the debt", async () => {
             const initialBalance = await signer.getBalance();
+            const [initialCollateral, initialDebt] = await currentDebtAndCollateral();
 
             const daiWad = utils.parseUnits("10000");
+            const etherWad = utils.parseEther("20");
             await dai.approve(proxy.address, daiWad)
 
             const callData = testObj.interface.encodeFunctionData(
@@ -94,14 +115,42 @@ describe("LiquityMigrator", () => {
                     ethJoin,
                     daiJoin,
                     cdpId,
-                    utils.parseEther("20"),
+                    etherWad,
                     daiWad
                 ]
             )
             await proxy.execute(testObj.address, callData)
             expect(await dai.balanceOf(signer.address)).to.eq(utils.parseUnits("40000"))
             expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("19")))
+            const [collateral, debt] = await currentDebtAndCollateral();
+            expect(collateral).to.be.bignumber.that.is.eq(initialCollateral.sub(etherWad))
+            expect(debt).to.be.bignumber.that.is.eq(initialDebt.sub(daiWad))
         });
+
+        it("can pay all debt", async () => {
+            const initialBalance = await signer.getBalance();
+            const [initialCollateral, initialDebt] = await currentDebtAndCollateral();
+
+            await dai.approve(proxy.address, initialDebt)
+
+            const callData = testObj.interface.encodeFunctionData(
+                "payAllDebt",
+                [
+                    manager.address,
+                    ethJoin,
+                    daiJoin,
+                    cdpId,
+                    initialCollateral
+                ]
+            )
+            await proxy.execute(testObj.address, callData)
+            expect(await dai.balanceOf(signer.address)).to.be.eq(0)
+            expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("79")))
+            const [collateral, debt] = await currentDebtAndCollateral();
+            expect(collateral).to.be.eq(0)
+            expect(debt).to.be.eq(0)
+        });
+
     });
 
 });
