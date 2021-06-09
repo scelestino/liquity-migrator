@@ -28,12 +28,16 @@ const {expect} = chai;
 describe("LiquityMigrator", () => {
     const ethJoin = "0x2F0b23f53734252Bda2277357e97e1517d6B042A";
     const daiJoin = "0x9759A6Ac90977b93B58547b4A71c78317f391A28";
+    const uniswapFactory = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f";
+    const daiAddress = "0x6b175474e89094c44da98b954eedeac495271d0f";
+    const wethAddress = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
     let signer: SignerWithAddress
     let testObj: MakerETHMigrator;
     let proxy: DSProxy
     let manager: ManagerLike
     let cdpId: BigNumber
     let dai: IERC20
+    let weth: IERC20
     let actions: DssProxyActions
     let urn: string;
     let vat: VatLike;
@@ -68,7 +72,8 @@ describe("LiquityMigrator", () => {
 
         await proxy.execute(actions.address, callData, {value: utils.parseEther("100")})
 
-        dai = IERC20__factory.connect("0x6b175474e89094c44da98b954eedeac495271d0f", signer);
+        dai = IERC20__factory.connect(daiAddress, signer);
+        weth = IERC20__factory.connect(wethAddress, signer);
         expect(await dai.balanceOf(signer.address)).to.eq(utils.parseUnits("50000"))
         //gas consumption means we can't perform strict equality
         expect(await signer.getBalance()).to.be.bignumber.that.is.lessThan(initialBalance.sub(utils.parseEther("100")))
@@ -84,10 +89,13 @@ describe("LiquityMigrator", () => {
         expect(debt).to.be.bignumber.that.is.eq(utils.parseUnits("50000"))
 
         const migratorFactory = (await ethers.getContractFactory("MakerETHMigrator", signer)) as MakerETHMigrator__factory;
-        testObj = await migratorFactory.deploy();
+        testObj = await migratorFactory.deploy(uniswapFactory, wethAddress, daiAddress);
         await testObj.deployed();
 
         expect(testObj.address).to.properAddress;
+
+        console.log("testObj", testObj.address)
+        console.log("proxy", proxy.address)
     });
 
     async function currentDebtAndCollateral() {
@@ -100,39 +108,62 @@ describe("LiquityMigrator", () => {
 
     // 4
     describe("migrate", async () => {
-        it("can pay part of the debt", async () => {
+        // xit("can pay part of the debt", async () => {
+        //     const initialBalance = await signer.getBalance();
+        //     const [initialCollateral, initialDebt] = await currentDebtAndCollateral();
+        //
+        //     const daiWad = utils.parseUnits("10000");
+        //     const etherWad = utils.parseEther("20");
+        //     await dai.approve(proxy.address, daiWad)
+        //
+        //     const callData = testObj.interface.encodeFunctionData(
+        //         "payDebt",
+        //         [
+        //             manager.address,
+        //             ethJoin,
+        //             daiJoin,
+        //             cdpId,
+        //             etherWad,
+        //             daiWad
+        //         ]
+        //     )
+        //     await proxy.execute(testObj.address, callData)
+        //     expect(await dai.balanceOf(signer.address)).to.eq(utils.parseUnits("40000"))
+        //     expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("19")))
+        //     const [collateral, debt] = await currentDebtAndCollateral();
+        //     expect(collateral).to.be.bignumber.that.is.eq(initialCollateral.sub(etherWad))
+        //     expect(debt).to.be.bignumber.that.is.eq(initialDebt.sub(daiWad))
+        // });
+        //
+        // xit("can pay all debt", async () => {
+        //     const initialBalance = await signer.getBalance();
+        //     const [initialCollateral, initialDebt] = await currentDebtAndCollateral();
+        //
+        //     await dai.approve(proxy.address, initialDebt)
+        //
+        //     const callData = testObj.interface.encodeFunctionData(
+        //         "payAllDebt",
+        //         [
+        //             manager.address,
+        //             ethJoin,
+        //             daiJoin,
+        //             cdpId,
+        //             initialCollateral
+        //         ]
+        //     )
+        //     await proxy.execute(testObj.address, callData)
+        //     expect(await dai.balanceOf(signer.address)).to.be.eq(0)
+        //     expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("79")))
+        //     const [collateral, debt] = await currentDebtAndCollateral();
+        //     expect(collateral).to.be.eq(0)
+        //     expect(debt).to.be.eq(0)
+        // });
+
+        it("can pay all debt with a DAI flash swap and repay ETH", async () => {
+            await dai.transfer("0x0000000000000000000000000000000000000000", utils.parseUnits("50000"));
+            expect(await dai.balanceOf(signer.address)).to.be.eq(0)
             const initialBalance = await signer.getBalance();
-            const [initialCollateral, initialDebt] = await currentDebtAndCollateral();
-
-            const daiWad = utils.parseUnits("10000");
-            const etherWad = utils.parseEther("20");
-            await dai.approve(proxy.address, daiWad)
-
-            const callData = testObj.interface.encodeFunctionData(
-                "payDebt",
-                [
-                    manager.address,
-                    ethJoin,
-                    daiJoin,
-                    cdpId,
-                    etherWad,
-                    daiWad
-                ]
-            )
-            await proxy.execute(testObj.address, callData)
-            expect(await dai.balanceOf(signer.address)).to.eq(utils.parseUnits("40000"))
-            expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("19")))
-            const [collateral, debt] = await currentDebtAndCollateral();
-            expect(collateral).to.be.bignumber.that.is.eq(initialCollateral.sub(etherWad))
-            expect(debt).to.be.bignumber.that.is.eq(initialDebt.sub(daiWad))
-        });
-
-        it("can pay all debt", async () => {
-            const initialBalance = await signer.getBalance();
-            const [initialCollateral, initialDebt] = await currentDebtAndCollateral();
-
-            await dai.approve(proxy.address, initialDebt)
-
+            const [initialCollateral,] = await currentDebtAndCollateral();
             const callData = testObj.interface.encodeFunctionData(
                 "payAllDebt",
                 [
@@ -140,17 +171,30 @@ describe("LiquityMigrator", () => {
                     ethJoin,
                     daiJoin,
                     cdpId,
-                    initialCollateral
+                    initialCollateral,
+                    testObj.address
                 ]
             )
+
+            console.log("initialBalance=" + utils.formatEther(initialBalance));
+
             await proxy.execute(testObj.address, callData)
+
+            const balanceAfterExecuting = await signer.getBalance();
+            console.log("balanceAfterExecuting=" + utils.formatEther(balanceAfterExecuting));
+
+
             expect(await dai.balanceOf(signer.address)).to.be.eq(0)
-            expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("79")))
+            expect(await dai.balanceOf(proxy.address)).to.be.eq(0)
+            expect(await weth.balanceOf(proxy.address)).to.be.eq(0)
+            const proxyOwner = await proxy.owner();
+            expect(proxyOwner).to.properAddress
+            expect(proxyOwner).to.be.eq(signer.address)
+            expect(await signer.getBalance()).to.be.bignumber.that.is.gt(initialBalance.add(utils.parseEther("81")))
             const [collateral, debt] = await currentDebtAndCollateral();
             expect(collateral).to.be.eq(0)
             expect(debt).to.be.eq(0)
         });
-
     });
 
 });

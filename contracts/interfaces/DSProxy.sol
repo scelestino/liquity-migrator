@@ -1,7 +1,11 @@
-pragma solidity ^0.7.6;
+pragma solidity =0.6.6;
 
 interface DSProxy {
-    function execute(address _target, bytes memory _data) external payable returns (bytes memory response);
+    function execute(address _target, bytes calldata _data) external payable returns (bytes memory response);
+
+    function setOwner(address owner_) external;
+
+    function owner() view external returns (address);
 }
 
 interface DSProxyFactory {

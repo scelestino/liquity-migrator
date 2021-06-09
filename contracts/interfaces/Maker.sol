@@ -1,4 +1,4 @@
-pragma solidity ^0.7.6;
+pragma solidity >=0.5.0;
 
 interface DssProxyActions {
     function openLockETHAndDraw(address manager, address jug, address ethJoin, address daiJoin, bytes32 ilk, uint wadD)
