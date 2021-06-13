@@ -16,8 +16,8 @@ import {
     MakerETHMigrator__factory,
     ManagerLike,
     ManagerLike__factory,
-    UniswapFlashManager,
-    UniswapFlashManager__factory,
+    FlashSwapManager,
+    FlashSwapManager__factory,
     VatLike,
     VatLike__factory
 } from "../typechain";
@@ -36,10 +36,9 @@ describe("LiquityMigrator", () => {
     const daiAddress = "0x6b175474e89094c44da98b954eedeac495271d0f";
     const wethAddress = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
     const lusdAddress = "0x5f98805A4E8be255a32880FDeC7F6728C6568bA0";
-    const swapRouter = "0xE592427A0AEce92De3Edee1F18E0157C05861564";
     const borrowerOperations = "0x24179CD81c9e782A4096035f7eC97fB8B783e007";
     let signer: SignerWithAddress
-    let testObj: MakerETHMigrator;
+    let migrator: MakerETHMigrator;
     let proxy: DSProxy
     let vaultManager: ManagerLike
     let troveManager: ITroveManager
@@ -49,7 +48,7 @@ describe("LiquityMigrator", () => {
     let actions: DssProxyActions
     let urn: string;
     let vat: VatLike;
-    let uniswapFlashManager: UniswapFlashManager;
+    let flashManager: FlashSwapManager;
 
     before(async () => {
         const signers = await ethers.getSigners()
@@ -98,19 +97,15 @@ describe("LiquityMigrator", () => {
         expect(collateral).to.be.bignumber.that.is.eq(utils.parseEther("100"))
         expect(debt).to.be.bignumber.that.is.eq(utils.parseUnits("5000"))
 
-        const uniswapFlashManagerFactory = (await ethers.getContractFactory("UniswapFlashManager", signer)) as UniswapFlashManager__factory;
-        uniswapFlashManager = await uniswapFlashManagerFactory.deploy(swapRouter, uniswapFactory, wethAddress, daiAddress, lusdAddress, BigNumber.from(500));
-        await uniswapFlashManager.deployed();
+        const FlashSwapManagerFactory = (await ethers.getContractFactory("FlashSwapManager", signer)) as FlashSwapManager__factory;
+        flashManager = await FlashSwapManagerFactory.deploy(uniswapFactory, wethAddress, daiAddress, lusdAddress);
+        await flashManager.deployed();
 
         const migratorFactory = (await ethers.getContractFactory("MakerETHMigrator", signer)) as MakerETHMigrator__factory;
-        testObj = await migratorFactory.deploy(uniswapFlashManager.address, wethAddress, daiAddress, lusdAddress, borrowerOperations);
-        await testObj.deployed();
+        migrator = await migratorFactory.deploy(flashManager.address, lusdAddress, borrowerOperations);
+        await migrator.deployed();
 
-        expect(testObj.address).to.properAddress;
-
-        console.log("testObj", testObj.address)
-        console.log("proxy", proxy.address)
-        console.log("uniswapFlashManager", uniswapFlashManager.address)
+        expect(migrator.address).to.properAddress;
     });
 
     async function currentDebtAndCollateral() {
@@ -121,25 +116,18 @@ describe("LiquityMigrator", () => {
         return [collateral, debt.mul(rate).sub(vatDai).div(BigNumber.from(10).pow(27))]
     }
 
-    // 4
     describe("migrate", async () => {
         it("can pay all debt with a DAI flash swap and repay ETH", async () => {
             await dai.transfer("0x0000000000000000000000000000000000000000", utils.parseUnits("5000"));
             expect(await dai.balanceOf(signer.address)).to.be.eq(0)
             const initialBalance = await signer.getBalance();
             const [initialMakerCollateral,] = await currentDebtAndCollateral();
-            const callData = testObj.interface.encodeFunctionData(
-                "payAllDebt",
-                [vaultManager.address, ethJoin, daiJoin, cdpId, initialMakerCollateral, testObj.address]
+            const callData = migrator.interface.encodeFunctionData(
+                "migrateVaultToTrove",
+                [vaultManager.address, ethJoin, daiJoin, cdpId, migrator.address, BigNumber.from(500)]
             )
 
-            console.log("initialBalance=" + utils.formatEther(initialBalance));
-
-            await proxy.execute(testObj.address, callData)
-
-            const balanceAfterExecuting = await signer.getBalance();
-            console.log("balanceAfterExecuting=" + utils.formatEther(balanceAfterExecuting));
-
+            await proxy.execute(migrator.address, callData)
 
             expect(await dai.balanceOf(signer.address)).to.be.eq(0)
             expect(await dai.balanceOf(proxy.address)).to.be.eq(0)
@@ -157,5 +145,4 @@ describe("LiquityMigrator", () => {
             expect(liquityDebt).to.be.bignumber.gt(utils.parseUnits("5179"))
         });
     });
-
 });
