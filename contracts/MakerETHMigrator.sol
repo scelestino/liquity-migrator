@@ -1,82 +1,61 @@
-pragma solidity =0.6.6;
+pragma solidity ^0.7.6;
+pragma abicoder v2;
 
 import "hardhat/console.sol";
+import "./UniswapFlashManager.sol";
 import "./interfaces/Maker.sol";
-import "./interfaces/IERC20.sol";
 import "./interfaces/DSProxy.sol";
-import '@uniswap/v2-core/contracts/interfaces/IUniswapV2Callee.sol';
-import '@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol';
-import '@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol';
-import '@uniswap/v2-periphery/contracts/libraries/UniswapV2Library.sol';
+import "./interfaces/IBorrowerOperations.sol";
+import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 
-contract MakerETHMigrator is IUniswapV2Callee {
+
+contract MakerETHMigrator {
     uint256 constant RAY = 10 ** 27;
-    IUniswapV2Factory immutable factory;
+
+    UniswapFlashManager public immutable flashManager;
     address immutable weth;
     address immutable dai;
-    uint constant deadline = 10 days;
+    address immutable lusd;
+    IBorrowerOperations immutable borrowerOperations;
 
-    constructor(address _factory, address _weth, address _dai) public {
-        factory = IUniswapV2Factory(_factory);
+    constructor(UniswapFlashManager _flashManager, address _weth, address _dai, address _lusd, IBorrowerOperations _borrowerOperations) {
+        flashManager = _flashManager;
         weth = _weth;
         dai = _dai;
+        lusd = _lusd;
+        borrowerOperations = _borrowerOperations;
     }
 
-    function uniswapV2Call(address sender, uint amount0, uint amount1, bytes calldata data) override external {
-        address token0 = IUniswapV2Pair(msg.sender).token0();
-        address token1 = IUniswapV2Pair(msg.sender).token1();
-        require(msg.sender == factory.getPair(token0, token1), "Unauthorized");
-
-        (address manager, address ethJoin, address daiJoin, uint cdp, uint wadC)
-        = abi.decode(data, (address, address, address, uint, uint));
-
-        IERC20(token0).transfer(sender, amount0);
-
-        DSProxy(sender).execute(
-            address(this),
-            abi.encodeWithSignature(
-                "useLoanToPay(address,address,address,uint256,uint256)", manager, ethJoin, daiJoin, cdp, wadC
-            )
-        );
-    }
-
-    function useLoanToPay(address manager, address ethJoin, address daiJoin, uint cdp, uint wadC) public {
-
-        uint borrowedAmount = IERC20(dai).balanceOf(address(this));
-
+    function useLoanToPay(address manager, address ethJoin, address daiJoin, uint cdp, uint wadC, int256 lusdToRepay, address pool) public {
+        // Pays maker debt with the DAI hold by the proxy & transfers the locked WETH to the proxy
         wipeAllAndFreeETH(manager, ethJoin, daiJoin, cdp, wadC);
-
-
-        address[] memory path = new address[](2);
-        path[0] = weth;
-        path[1] = dai;
-
-
-        uint amountToRepay = UniswapV2Library.getAmountsIn(address(factory), borrowedAmount, path)[0];
-
-        GemJoinLike(ethJoin).gem().transfer(factory.getPair(dai, weth), amountToRepay);
+        // Converts WETH to ETH
+        GemJoinLike(ethJoin).gem().withdraw(wadC);
+        // Open Liquity trove
+        borrowerOperations.openTrove{value : wadC}(uint(10000327844848179), uint(lusdToRepay), address(this), address(this));
+        // Complete swap
+        IERC20(lusd).transfer(pool, uint(lusdToRepay));
     }
 
-    function payAllDebt(address manager, address ethJoin, address daiJoin, uint cdp, uint wadC, address self)
-    public {
+
+    function payAllDebt(address manager, address ethJoin, address daiJoin, uint cdp, uint wadC, address migrator) external {
         address vat = ManagerLike(manager).vat();
         address urn = ManagerLike(manager).urns(cdp);
         bytes32 ilk = ManagerLike(manager).ilks(cdp);
         uint daiAmount = _getWipeAllWad(vat, urn, urn, ilk);
 
+        DSProxy(address(this)).setOwner(address(flashManager));
 
-        bytes memory cd = abi.encode(manager, ethJoin, daiJoin, cdp, wadC);
-
-        DSProxy(address(this)).setOwner(self);
-
-        IUniswapV2Pair(factory.getPair(dai, weth)).swap(daiAmount, 0, self, cd);
-
-        uint remainingWETH = IERC20(weth).balanceOf(address(this));
-
-        // Converts WETH to ETH
-        GemJoinLike(ethJoin).gem().withdraw(remainingWETH);
-        // Sends ETH back to the user's wallet
-        msg.sender.transfer(remainingWETH);
+        flashManager.initFlash(UniswapFlashManager.FlashParams({
+        manager : manager,
+        ethJoin : ethJoin,
+        daiJoin : daiJoin,
+        cdp : cdp,
+        wadC : wadC,
+        proxy : address(this),
+        migrator : migrator,
+        daiAmount : int256(daiAmount)
+        }));
 
         DSProxy(address(this)).setOwner(tx.origin);
     }

@@ -1,4 +1,4 @@
-pragma solidity =0.6.6;
+pragma solidity ^0.7.6;
 
 interface DSProxy {
     function execute(address _target, bytes calldata _data) external payable returns (bytes memory response);
