@@ -117,11 +117,11 @@ if (process.env.EOA) {
       ]
     }
 
-    describe('migrate', async () => {
-      it('can pay all debt with a DAI flash swap and repay ETH', async () => {
+    describe('migrate a real vault', async () => {
+      it('take loan, pay debt, open trove, repay debt', async () => {
         expect(await dai.balanceOf(signer.address)).to.be.eq(0)
         const initialBalance = await signer.getBalance()
-        const [initialMakerCollateral] = await currentDebtAndCollateral()
+        const [initialMakerCollateral, initialMakerDebt] = await currentDebtAndCollateral()
         const callData = migrator.interface.encodeFunctionData(
           'migrateVaultToTrove',
           [
@@ -154,6 +154,8 @@ if (process.env.EOA) {
           ,
         ] = await troveManager.getEntireDebtAndColl(proxy.address)
         expect(liquityCollateral).to.be.bignumber.eq(initialMakerCollateral)
+
+        console.log(`Swapped debt of ${utils.formatUnits(initialMakerDebt)} DAI by debt of ${utils.formatUnits(liquityDebt)} LUSD`)
       })
     })
   })

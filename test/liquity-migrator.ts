@@ -141,8 +141,7 @@ describe("LiquityMigrator", () => {
             expect(makerDebt).to.be.eq(0)
             const [liquityDebt, liquityCollateral, ,] = await troveManager.getEntireDebtAndColl(proxy.address)
             expect(liquityCollateral).to.be.bignumber.eq(initialMakerCollateral)
-            expect(liquityDebt).to.be.bignumber.lt(utils.parseUnits("5180"))
-            expect(liquityDebt).to.be.bignumber.gt(utils.parseUnits("5179"))
+            expect(liquityDebt).to.be.bignumber.gt(utils.parseUnits("5000"))
         });
     });
 });
