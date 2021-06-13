@@ -15,3 +15,7 @@ interface DSProxyFactory {
 
     function build(address owner) external returns (DSProxy proxy);
 }
+
+interface ProxyRegistry {
+    function proxies(address owner) external view returns (DSProxy proxy);
+}

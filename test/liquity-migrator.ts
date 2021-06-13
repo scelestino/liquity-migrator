@@ -100,11 +100,11 @@ describe("LiquityMigrator", () => {
         const FlashSwapManagerFactory = (await ethers.getContractFactory("FlashSwapManager", signer)) as FlashSwapManager__factory;
         flashManager = await FlashSwapManagerFactory.deploy(uniswapFactory, wethAddress, daiAddress, lusdAddress);
         await flashManager.deployed();
+        expect(flashManager.address).to.properAddress;
 
         const migratorFactory = (await ethers.getContractFactory("MakerETHMigrator", signer)) as MakerETHMigrator__factory;
         migrator = await migratorFactory.deploy(flashManager.address, lusdAddress, borrowerOperations);
         await migrator.deployed();
-
         expect(migrator.address).to.properAddress;
     });
 
