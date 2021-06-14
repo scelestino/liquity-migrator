@@ -10,6 +10,7 @@ import "./interfaces/DSProxy.sol";
 import "./interfaces/IBorrowerOperations.sol";
 import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import '@uniswap/v3-core/contracts/libraries/LowGasSafeMath.sol';
+import '@uniswap/v3-periphery/contracts/libraries/PoolAddress.sol';
 import '@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol';
 
 
@@ -22,15 +23,29 @@ contract MakerETHMigrator {
     FlashSwapManager immutable flashSwapManager;
     IBorrowerOperations immutable borrowerOperations;
     address immutable lusd;
+    ManagerLike immutable manager;
+    GemJoinLike immutable ethJoin;
+    DaiJoinLike immutable daiJoin;
+    address immutable factory;
 
-    constructor(FlashSwapManager _flashManager, address _lusd, IBorrowerOperations _borrowerOperations) {
+    constructor(FlashSwapManager _flashManager, 
+                address _lusd, 
+                IBorrowerOperations _borrowerOperations,
+                ManagerLike _manager, 
+                GemJoinLike _ethJoin, 
+                DaiJoinLike _daiJoin,
+                address _factory) {
         flashSwapManager = _flashManager;
         lusd = _lusd;
         borrowerOperations = _borrowerOperations;
+        manager= _manager;
+        ethJoin= _ethJoin;
+        daiJoin= _daiJoin;
+        factory = _factory;
     }
 
-    function migrateVaultToTrove(address manager, address ethJoin, address daiJoin, uint cdp, address migrator, uint24 fee) external {
-        (uint ethCollateral, uint daiDebt) = vaultContents(manager, cdp);
+    function migrateVaultToTrove(uint cdp, uint24 uniswapFee, uint liquityMaxFee, address liquityUpperHint, address liquityLowerHint) external {
+        (uint ethCollateral, uint daiDebt) = vaultContents(cdp);
 
         // Save current proxy owner
         address proxyOwner = DSProxy(address(this)).owner();
@@ -38,53 +53,52 @@ contract MakerETHMigrator {
         DSProxy(address(this)).setOwner(address(flashSwapManager));
 
         flashSwapManager.startFlashSwap(FlashSwapManager.FlashParams({
-            manager : manager,
-            ethJoin : ethJoin,
-            daiJoin : daiJoin,
             cdp : cdp,
             ethToMove : ethCollateral,
             proxy : address(this),
-            migrator : migrator,
             daiAmount : daiDebt,
-            fee: fee
+            uniswapFee: uniswapFee,
+            liquityMaxFee: liquityMaxFee,
+            liquityUpperHint: liquityUpperHint,
+            liquityLowerHint: liquityLowerHint
         }));
 
         // Restore proxy owner
         DSProxy(address(this)).setOwner(proxyOwner);
     }
 
-    function continueMigration(FlashSwapManager.FlashCallbackData memory data, uint256 lusdToRepay, address pool) external {
+    function continueMigration(FlashSwapManager.FlashCallbackData memory data, uint256 lusdToRepay) external {
         // Pays maker debt and withdraw collateral
         wipeAllAndFreeETH(data);
         // Open Liquity trove
-        borrowerOperations.openTrove{value : data.ethToMove}(uint(10000327844848179), lusdToRepay, address(this), address(this));
+        borrowerOperations.openTrove{value : data.ethToMove}(data.liquityMaxFee, lusdToRepay, data.liquityUpperHint, data.liquityLowerHint);
         // Complete swap
-        TransferHelper.safeTransfer(lusd, pool, lusdToRepay);
+        TransferHelper.safeTransfer(lusd, PoolAddress.computeAddress(factory, data.poolKey), lusdToRepay);
     }
 
     function wipeAllAndFreeETH(FlashSwapManager.FlashCallbackData memory data) internal {
-        address urn = ManagerLike(data.manager).urns(data.cdp);
-        bytes32 ilk = ManagerLike(data.manager).ilks(data.cdp);
-        (, uint art) = VatLike(ManagerLike(data.manager).vat()).urns(ilk, urn);
+        address urn = manager.urns(data.cdp);
+        bytes32 ilk = manager.ilks(data.cdp);
+        (, uint art) = VatLike(manager.vat()).urns(ilk, urn);
 
         // Approves adapter to take the DAI amount
-        DaiJoinLike(data.daiJoin).dai().approve(data.daiJoin, data.daiAmount);
+        daiJoin.dai().approve(address(daiJoin), data.daiAmount);
         // Joins DAI into the vat
-        DaiJoinLike(data.daiJoin).join(urn, data.daiAmount);
+        daiJoin.join(urn, data.daiAmount);
         // Paybacks debt to the CDP and unlocks WETH amount from it
-        ManagerLike(data.manager).frob(data.cdp, - toInt(data.ethToMove), - int(art));
+        manager.frob(data.cdp, - toInt(data.ethToMove), - int(art));
         // Moves the amount from the CDP urn to proxy's address
-        ManagerLike(data.manager).flux(data.cdp, address(this), data.ethToMove);
+        manager.flux(data.cdp, address(this), data.ethToMove);
         // Exits WETH amount to proxy address as a token
-        GemJoinLike(data.ethJoin).exit(address(this), data.ethToMove);
+        ethJoin.exit(address(this), data.ethToMove);
         // Converts WETH to ETH
-        GemJoinLike(data.ethJoin).gem().withdraw(data.ethToMove);
+        ethJoin.gem().withdraw(data.ethToMove);
     }
 
-    function vaultContents(address manager, uint cdp) internal view returns (uint ethCollateral, uint daiDebt) {
-        address vat = ManagerLike(manager).vat();
-        address urn = ManagerLike(manager).urns(cdp);
-        bytes32 ilk = ManagerLike(manager).ilks(cdp);
+    function vaultContents(uint cdp) internal view returns (uint ethCollateral, uint daiDebt) {
+        address vat = manager.vat();
+        address urn = manager.urns(cdp);
+        bytes32 ilk = manager.ilks(cdp);
         
         // Gets actual rate from the vat
         (, uint rate,,,) = VatLike(vat).ilks(ilk);

@@ -29,7 +29,7 @@ const { expect } = chai
 dotEnvConfig()
 
 if (process.env.EOA) {
-  describe('LiquityMigrator', () => {
+  describe('EOA migration', () => {
     const eoa = process.env.EOA || ""
     const ethJoin = '0x2F0b23f53734252Bda2277357e97e1517d6B042A'
     const daiJoin = '0x9759A6Ac90977b93B58547b4A71c78317f391A28'
@@ -101,9 +101,15 @@ if (process.env.EOA) {
         flashManager.address,
         lusdAddress,
         borrowerOperations,
+        vaultManager.address,
+        ethJoin,
+        daiJoin,
+        uniswapFactory,
       )
       await migrator.deployed()
       expect(migrator.address).to.properAddress
+
+      await flashManager.setMigrator(migrator.address)
     })
 
     async function currentDebtAndCollateral() {
@@ -125,12 +131,11 @@ if (process.env.EOA) {
         const callData = migrator.interface.encodeFunctionData(
           'migrateVaultToTrove',
           [
-            vaultManager.address,
-            ethJoin,
-            daiJoin,
             cdpId,
-            migrator.address,
             BigNumber.from(500),
+            utils.parseUnits('0.01'),
+            proxy.address,
+            proxy.address,
           ],
         )
 

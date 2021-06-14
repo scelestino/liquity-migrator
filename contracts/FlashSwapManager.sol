@@ -21,30 +21,33 @@ contract FlashSwapManager is IUniswapV3SwapCallback, PeripheryImmutableState {
 
     address immutable dai;
     address immutable lusd;
+    address migrator;
 
     constructor(address _factory, address _weth, address _dai, address _lusd) PeripheryImmutableState(_factory, _weth) {
         dai = _dai;
         lusd = _lusd;
     }
 
-    function uniswapV3SwapCallback(int256 amount0Delta, int256, bytes calldata data) external override {
+    function setMigrator(address _migrator) external {
+        require(migrator == address(0));
+        migrator = _migrator;
+    }
+
+    function uniswapV3SwapCallback(int256 borrowedLusd, int256, bytes calldata data) external override {
         FlashCallbackData memory decoded = abi.decode(data, (FlashCallbackData));
-        IUniswapV3Pool pool = CallbackValidation.verifyCallback(factory, decoded.poolKey);
+        CallbackValidation.verifyCallback(factory, decoded.poolKey);
 
         DSProxy(decoded.proxy).execute(
-            decoded.migrator,
-            abi.encodeWithSelector(
-                MakerETHMigrator.continueMigration.selector, decoded, uint(amount0Delta), address(pool)
-            )
+            migrator,
+            abi.encodeWithSelector(MakerETHMigrator.continueMigration.selector, decoded, uint(borrowedLusd))
         );
     }
 
-    /// @param params The parameters necessary for flash and the callback, passed in as FlashParams
-    /// @notice Calls the pools swap function with data needed in `uniswapV3SwapCallback`
     function startFlashSwap(FlashParams memory params) external {
-        PoolAddress.PoolKey memory poolKey = PoolAddress.PoolKey({token0 : lusd, token1 : dai, fee : params.fee});
+        PoolAddress.PoolKey memory poolKey = PoolAddress.PoolKey({token0 : lusd, token1 : dai, fee : params.uniswapFee});
         IUniswapV3Pool pool = IUniswapV3Pool(PoolAddress.computeAddress(factory, poolKey));
 
+        //TODO get this as param
         (uint160 sqrtPriceX96,,,,,,) = pool.slot0();
         uint160 sqrtPriceX96After = SqrtPriceMath.getNextSqrtPriceFromAmount1RoundingDown(sqrtPriceX96, pool.liquidity(), uint(params.daiAmount), false);
 
@@ -55,15 +58,14 @@ contract FlashSwapManager is IUniswapV3SwapCallback, PeripheryImmutableState {
             sqrtPriceX96After,
             abi.encode(
                 FlashCallbackData({
-                    poolKey : poolKey,
-                    manager : params.manager,
-                    ethJoin : params.ethJoin,
-                    daiJoin : params.daiJoin,
-                    cdp : params.cdp,
-                    ethToMove : params.ethToMove,
-                    proxy : params.proxy,
-                    migrator : params.migrator,
-                    daiAmount : params.daiAmount
+                    poolKey: poolKey,
+                    cdp: params.cdp,
+                    ethToMove: params.ethToMove,
+                    proxy: params.proxy,
+                    daiAmount: params.daiAmount,
+                    liquityMaxFee: params.liquityMaxFee,
+                    liquityUpperHint: params.liquityUpperHint,
+                    liquityLowerHint: params.liquityLowerHint
                 })
             )
         );
@@ -71,25 +73,23 @@ contract FlashSwapManager is IUniswapV3SwapCallback, PeripheryImmutableState {
 
     struct FlashCallbackData {
         PoolAddress.PoolKey poolKey;
-        address manager;
-        address ethJoin;
-        address daiJoin;
         uint cdp;
         uint ethToMove;
         address proxy;
-        address migrator;
         uint256 daiAmount;
+        uint liquityMaxFee; 
+        address liquityUpperHint; 
+        address liquityLowerHint;
     }
 
     struct FlashParams {
-        address manager;
-        address ethJoin;
-        address daiJoin;
         uint cdp;
         uint ethToMove;
         address proxy;
-        address migrator;
         uint256 daiAmount;
-        uint24 fee;
+        uint24 uniswapFee;
+        uint liquityMaxFee; 
+        address liquityUpperHint; 
+        address liquityLowerHint;
     }
 }
