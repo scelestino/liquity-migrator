@@ -35,7 +35,8 @@ describe('LiquityMigrator', () => {
   const wethAddress = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
   const lusdAddress = '0x5f98805A4E8be255a32880FDeC7F6728C6568bA0'
   const borrowerOperations = '0x24179CD81c9e782A4096035f7eC97fB8B783e007'
-  let signer: SignerWithAddress
+  let owner: SignerWithAddress
+  let user: SignerWithAddress
   let migrator: MakerETHMigrator
   let proxy: DSProxy
   let vaultManager: ManagerLike
@@ -50,35 +51,36 @@ describe('LiquityMigrator', () => {
 
   before(async () => {
     const signers = await ethers.getSigners()
-    signer = signers[0]
+    owner = signers[0]
+    user = signers[1]
     vaultManager = ManagerLike__factory.connect(
       '0x5ef30b9986345249bc32d8928B7ee64DE9435E39',
-      signer,
+      owner,
     )
     troveManager = ITroveManager__factory.connect(
       '0xA39739EF8b0231DbFA0DcdA07d7e29faAbCf4bb2',
-      signer,
+      owner,
     )
 
-    const initialBalance = await signer.getBalance()
+    const initialBalance = await user.getBalance()
 
     //Deploy proxy
     const factory = DSProxyFactory__factory.connect(
       '0xA26e15C895EFc0616177B7c1e7270A4C7D51C997',
-      signer,
+      user,
     )
-    const tx = await factory.build(signer.address)
+    const tx = await factory.build(user.address)
     const events = await factory.queryFilter(
       factory.filters.Created(),
       tx.blockNumber,
     )
     expect(events[0].args.proxy).to.properAddress
-    proxy = DSProxy__factory.connect(events[0].args.proxy, signer)
+    proxy = DSProxy__factory.connect(events[0].args.proxy, user)
 
     //Open vault
     actions = DssProxyActions__factory.connect(
       '0x82ecD135Dce65Fbc6DbdD0e4237E0AF93FFD5038',
-      signer,
+      user,
     )
     const callData = actions.interface.encodeFunctionData(
       'openLockETHAndDraw',
@@ -96,18 +98,18 @@ describe('LiquityMigrator', () => {
       value: utils.parseEther('100'),
     })
 
-    dai = IERC20__factory.connect(daiAddress, signer)
-    weth = IERC20__factory.connect(wethAddress, signer)
-    expect(await dai.balanceOf(signer.address)).to.eq(utils.parseUnits('5000'))
+    dai = IERC20__factory.connect(daiAddress, user)
+    weth = IERC20__factory.connect(wethAddress, user)
+    expect(await dai.balanceOf(user.address)).to.eq(utils.parseUnits('5000'))
     //gas consumption means we can't perform strict equality
-    expect(await signer.getBalance()).to.be.bignumber.that.is.lessThan(
+    expect(await user.getBalance()).to.be.bignumber.that.is.lessThan(
       initialBalance.sub(utils.parseEther('100')),
     )
 
     cdpId = await vaultManager.last(proxy.address)
     urn = await vaultManager.urns(cdpId)
     const _vat = await vaultManager.vat()
-    vat = VatLike__factory.connect(_vat, signer)
+    vat = VatLike__factory.connect(_vat, owner)
 
     const [collateral, debt] = await currentDebtAndCollateral()
 
@@ -116,7 +118,7 @@ describe('LiquityMigrator', () => {
 
     const FlashSwapManagerFactory = (await ethers.getContractFactory(
       'FlashSwapManager',
-      signer,
+      owner,
     )) as FlashSwapManager__factory
     flashManager = await FlashSwapManagerFactory.deploy(
       uniswapFactory,
@@ -129,7 +131,7 @@ describe('LiquityMigrator', () => {
 
     const migratorFactory = (await ethers.getContractFactory(
       'MakerETHMigrator',
-      signer,
+      owner,
     )) as MakerETHMigrator__factory
     migrator = await migratorFactory.deploy(
       flashManager.address,
@@ -159,12 +161,13 @@ describe('LiquityMigrator', () => {
 
   describe('migrate', async () => {
     it('can pay all debt with a DAI flash swap and repay ETH', async () => {
+      const ownerBalance = await owner.getBalance()
       await dai.transfer(
         '0x0000000000000000000000000000000000000000',
         utils.parseUnits('5000'),
       )
-      expect(await dai.balanceOf(signer.address)).to.be.eq(0)
-      const initialBalance = await signer.getBalance()
+      expect(await dai.balanceOf(user.address)).to.be.eq(0)
+      const initialBalance = await user.getBalance()
       const [initialMakerCollateral] = await currentDebtAndCollateral()
       const callData = migrator.interface.encodeFunctionData(
         'migrateVaultToTrove',
@@ -179,13 +182,13 @@ describe('LiquityMigrator', () => {
 
       await proxy.execute(migrator.address, callData)
 
-      expect(await dai.balanceOf(signer.address)).to.be.eq(0)
+      expect(await dai.balanceOf(user.address)).to.be.eq(0)
       expect(await dai.balanceOf(proxy.address)).to.be.eq(0)
       expect(await weth.balanceOf(proxy.address)).to.be.eq(0)
       const proxyOwner = await proxy.owner()
       expect(proxyOwner).to.properAddress
-      expect(proxyOwner).to.be.eq(signer.address)
-      expect(await signer.getBalance()).to.be.bignumber.that.is.lt(
+      expect(proxyOwner).to.be.eq(user.address)
+      expect(await user.getBalance()).to.be.bignumber.that.is.lt(
         initialBalance,
       )
       const [makerCollateral, makerDebt] = await currentDebtAndCollateral()
@@ -195,8 +198,10 @@ describe('LiquityMigrator', () => {
         liquityDebt,
         liquityCollateral,
       ] = await troveManager.getEntireDebtAndColl(proxy.address)
-      expect(liquityCollateral).to.be.bignumber.eq(initialMakerCollateral)
+      const expectedFee = utils.parseUnits("0.3"); // 3% of 100 ETH = 0.3 ETH
+      expect(liquityCollateral).to.be.bignumber.eq(initialMakerCollateral.sub(expectedFee))
       expect(liquityDebt).to.be.bignumber.gt(utils.parseUnits('5000'))
+      expect(await owner.getBalance()).to.be.bignumber.eq(ownerBalance.add(expectedFee));
     })
   })
 })

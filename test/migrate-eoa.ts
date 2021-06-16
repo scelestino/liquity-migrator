@@ -38,7 +38,8 @@ if (process.env.EOA) {
     const wethAddress = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
     const lusdAddress = '0x5f98805A4E8be255a32880FDeC7F6728C6568bA0'
     const borrowerOperations = '0x24179CD81c9e782A4096035f7eC97fB8B783e007'
-    let signer: SignerWithAddress
+    let user: SignerWithAddress
+    let owner: SignerWithAddress
     let migrator: MakerETHMigrator
     let proxy: DSProxy
     let vaultManager: ManagerLike
@@ -51,38 +52,40 @@ if (process.env.EOA) {
     let flashManager: FlashSwapManager
 
     before(async () => {
+      const signers = await ethers.getSigners()
+      owner = signers[0]
       await network.provider.request({
         method: 'hardhat_impersonateAccount',
         params: [eoa],
       })
-      signer = await ethers.getSigner(eoa)
+      user = await ethers.getSigner(eoa)
       const registry = await ProxyRegistry__factory.connect(
         '0x4678f0a6958e4d2bc4f1baf7bc52e8f3564f3fe4',
-        signer,
+        user,
       )
       const _proxy = await registry.proxies(eoa)
-      proxy = DSProxy__factory.connect(_proxy, signer)
+      proxy = DSProxy__factory.connect(_proxy, user)
 
       vaultManager = ManagerLike__factory.connect(
         '0x5ef30b9986345249bc32d8928B7ee64DE9435E39',
-        signer,
+        user,
       )
       troveManager = ITroveManager__factory.connect(
         '0xA39739EF8b0231DbFA0DcdA07d7e29faAbCf4bb2',
-        signer,
+        user,
       )
 
-      dai = IERC20__factory.connect(daiAddress, signer)
-      weth = IERC20__factory.connect(wethAddress, signer)
+      dai = IERC20__factory.connect(daiAddress, user)
+      weth = IERC20__factory.connect(wethAddress, user)
 
       cdpId = await vaultManager.last(proxy.address)
       urn = await vaultManager.urns(cdpId)
       const _vat = await vaultManager.vat()
-      vat = VatLike__factory.connect(_vat, signer)
+      vat = VatLike__factory.connect(_vat, user)
 
       const FlashSwapManagerFactory = (await ethers.getContractFactory(
         'FlashSwapManager',
-        signer,
+        owner,
       )) as FlashSwapManager__factory
       flashManager = await FlashSwapManagerFactory.deploy(
         uniswapFactory,
@@ -95,7 +98,7 @@ if (process.env.EOA) {
 
       const migratorFactory = (await ethers.getContractFactory(
         'MakerETHMigrator',
-        signer,
+        owner,
       )) as MakerETHMigrator__factory
       migrator = await migratorFactory.deploy(
         flashManager.address,
@@ -125,8 +128,8 @@ if (process.env.EOA) {
 
     describe('migrate a real vault', async () => {
       it('take loan, pay debt, open trove, repay debt', async () => {
-        expect(await dai.balanceOf(signer.address)).to.be.eq(0)
-        const initialBalance = await signer.getBalance()
+        expect(await dai.balanceOf(user.address)).to.be.eq(0)
+        const initialBalance = await user.getBalance()
         const [initialMakerCollateral, initialMakerDebt] = await currentDebtAndCollateral()
         const callData = migrator.interface.encodeFunctionData(
           'migrateVaultToTrove',
@@ -141,13 +144,13 @@ if (process.env.EOA) {
 
         await proxy.execute(migrator.address, callData)
 
-        expect(await dai.balanceOf(signer.address)).to.be.eq(0)
+        expect(await dai.balanceOf(user.address)).to.be.eq(0)
         expect(await dai.balanceOf(proxy.address)).to.be.eq(0)
         expect(await weth.balanceOf(proxy.address)).to.be.eq(0)
         const proxyOwner = await proxy.owner()
         expect(proxyOwner).to.properAddress
-        expect(proxyOwner).to.be.eq(signer.address)
-        expect(await signer.getBalance()).to.be.bignumber.that.is.lt(
+        expect(proxyOwner).to.be.eq(user.address)
+        expect(await user.getBalance()).to.be.bignumber.that.is.lt(
           initialBalance,
         )
         const [makerCollateral, makerDebt] = await currentDebtAndCollateral()
@@ -158,7 +161,8 @@ if (process.env.EOA) {
           liquityCollateral,
           ,
         ] = await troveManager.getEntireDebtAndColl(proxy.address)
-        expect(liquityCollateral).to.be.bignumber.eq(initialMakerCollateral)
+        expect(liquityCollateral).to.be.bignumber.lt(initialMakerCollateral)
+        
 
         console.log(`Swapped debt of ${utils.formatUnits(initialMakerDebt)} DAI by debt of ${utils.formatUnits(liquityDebt)} LUSD`)
       })

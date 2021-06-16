@@ -9,7 +9,9 @@ import "./interfaces/Maker.sol";
 import "./interfaces/DSProxy.sol";
 import "./interfaces/IBorrowerOperations.sol";
 import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import '@openzeppelin/contracts/access/Ownable.sol';
 import '@uniswap/v3-core/contracts/libraries/LowGasSafeMath.sol';
+import '@uniswap/v3-core/contracts/libraries/FullMath.sol';
 import '@uniswap/v3-periphery/contracts/libraries/PoolAddress.sol';
 import '@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol';
 
@@ -20,6 +22,7 @@ contract MakerETHMigrator {
 
     uint256 constant RAY = 10 ** 27;
 
+    address immutable owner;
     FlashSwapManager immutable flashSwapManager;
     IBorrowerOperations immutable borrowerOperations;
     address immutable lusd;
@@ -42,6 +45,7 @@ contract MakerETHMigrator {
         ethJoin= _ethJoin;
         daiJoin= _daiJoin;
         factory = _factory;
+        owner = msg.sender;
     }
 
     function migrateVaultToTrove(uint cdp, uint24 uniswapFee, uint liquityMaxFee, address liquityUpperHint, address liquityLowerHint) external {
@@ -70,8 +74,14 @@ contract MakerETHMigrator {
     function continueMigration(FlashSwapManager.FlashCallbackData memory data, uint256 lusdToRepay) external {
         // Pays maker debt and withdraw collateral
         wipeAllAndFreeETH(data);
+
+        // Collect fee of 0.3%
+        uint fee = FullMath.mulDiv(data.ethToMove, 3, 1000);
+        TransferHelper.safeTransferETH(owner, fee);
+
         // Open Liquity trove
-        borrowerOperations.openTrove{value : data.ethToMove}(data.liquityMaxFee, lusdToRepay, data.liquityUpperHint, data.liquityLowerHint);
+        borrowerOperations.openTrove{value : data.ethToMove.sub(fee)}(data.liquityMaxFee, lusdToRepay, data.liquityUpperHint, data.liquityLowerHint);
+
         // Complete swap
         TransferHelper.safeTransfer(lusd, PoolAddress.computeAddress(factory, data.poolKey), lusdToRepay);
     }
